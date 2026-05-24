@@ -170,6 +170,94 @@ class TelegramUploader:
 
         return base_filename
 
+    async def _embed_tracks(self):
+        if not self._up_path.lower().endswith((".mkv", ".mp4")):
+            return
+
+        cmd = ["mediainfo", "--Output=JSON", self._up_path]
+        try:
+            res = await cmd_exec(cmd)
+            data = json.loads(res[0])
+            tracks = data.get("media", {}).get("track", [])
+
+            audio_idx = 0
+            sub_idx = 0
+            metadata_args = []
+            has_tracks_to_modify = False
+
+            lang_map = {
+                "ta": "Tamil", "hi": "Hindi", "en": "English",
+                "ja": "Japanese", "ml": "Malayalam", "te": "Telugu",
+                "ko": "Korean", "zh": "Chinese", "ar": "Arabic"
+            }
+
+            codec_map = {
+                "Advanced Audio Coding": "AAC",
+                "Dolby Digital Plus": "EAC-3",
+                "Dolby Digital": "AC-3",
+                "Free Lossless Audio Codec": "FLAC",
+                "MPEG Audio": "MP3",
+                "DTS": "DTS",
+            }
+
+            for track in tracks:
+                track_type = track.get("@type")
+                if track_type == "Audio":
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else "Unknown"
+                    audio_codec = track.get("Format", "")
+                    audio_codec_full = codec_map.get(audio_codec, audio_codec) if audio_codec else "Unknown"
+
+                    title = f"{lang_full} ({audio_codec_full}) | @R_Bots_Updates - Search on Telegram"
+                    metadata_args.extend(["-metadata:s:a:" + str(audio_idx), f"title={title}"])
+                    audio_idx += 1
+                    has_tracks_to_modify = True
+                elif track_type == "Text":
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else "Unknown"
+
+                    title = f"{lang_full} | @R_Bots_Updates - Search on Telegram"
+                    metadata_args.extend(["-metadata:s:s:" + str(sub_idx), f"title={title}"])
+                    sub_idx += 1
+                    has_tracks_to_modify = True
+
+            if not has_tracks_to_modify:
+                return
+
+            temp_file = f"{self._up_path}.temp{ospath.splitext(self._up_path)[1]}"
+
+            ffmpeg_cmd = [
+                "ffmpeg", "-i", self._up_path,
+                "-map", "0", "-c", "copy"
+            ] + metadata_args + [temp_file, "-y"]
+
+            _, _, returncode = await cmd_exec(ffmpeg_cmd)
+
+            if returncode == 0 and await aiopath.exists(temp_file):
+                # Ensure the original file is replaced successfully
+                await rename(temp_file, self._up_path)
+            else:
+                if await aiopath.exists(temp_file):
+                    await remove(temp_file)
+
+        except Exception as e:
+            LOGGER.error(f"FFmpeg track embed Error: {e}")
+            if await aiopath.exists(f"{self._up_path}.temp{ospath.splitext(self._up_path)[1]}"):
+                try:
+                    await remove(f"{self._up_path}.temp{ospath.splitext(self._up_path)[1]}")
+                except:
+                    pass
+
+    def _format_duration(self, ms):
+        try:
+            seconds = float(ms) / 1000
+            h = int(seconds // 3600)
+            m = int((seconds % 3600) // 60)
+            s = int(seconds % 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        except (ValueError, TypeError):
+            return "00:00:00"
+
     async def _generate_caption(self, filename):
         size_str = get_readable_file_size(await aiopath.getsize(self._up_path))
         cmd = ["mediainfo", "--Output=JSON", self._up_path]
@@ -179,37 +267,69 @@ class TelegramUploader:
             tracks = data.get("media", {}).get("track", [])
 
             is_video = False
-            codec = ""
-            width = ""
             height = ""
+            width = ""
+            duration_ms = "0"
             audio_tracks = []
             subtitle_tracks = []
 
+            lang_map = {
+                "ta": "Tamil", "hi": "Hindi", "en": "English",
+                "ja": "Japanese", "ml": "Malayalam", "te": "Telugu",
+                "ko": "Korean", "zh": "Chinese", "ar": "Arabic"
+            }
+
+            codec_map = {
+                "Advanced Audio Coding": "AAC",
+                "Dolby Digital Plus": "EAC-3",
+                "Dolby Digital": "AC-3",
+                "Free Lossless Audio Codec": "FLAC",
+                "MPEG Audio": "MP3",
+                "DTS": "DTS",
+            }
+
             for track in tracks:
                 track_type = track.get("@type")
-                if track_type == "Video":
+                if track_type == "General" and "Duration" in track:
+                    duration_ms = track.get("Duration", "0")
+                elif track_type == "Video":
                     is_video = True
-                    codec = track.get("Format", "")
                     width = track.get("Width", "")
                     height = track.get("Height", "")
                 elif track_type == "Audio":
-                    lang = track.get("Language", "Unknown")
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else ""
+
                     audio_codec = track.get("Format", "")
-                    audio_tracks.append(f"{lang} ({audio_codec})")
+                    audio_codec_full = codec_map.get(audio_codec, audio_codec)
+
+                    if lang_full:
+                        audio_tracks.append(f"{lang_full} ({audio_codec_full})")
+                    else:
+                        audio_tracks.append(f"Unknown ({audio_codec_full})")
                 elif track_type == "Text":
-                    lang = track.get("Language", "Unknown")
-                    sub_codec = track.get("Format", "")
-                    subtitle_tracks.append(f"{lang} ({sub_codec})")
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else ""
+                    if lang_full:
+                        subtitle_tracks.append(f"{lang_full}")
+                    else:
+                        subtitle_tracks.append(f"Unknown")
 
             if not is_video:
                 return f"{filename}\n📦 {size_str}"
 
-            caption = f"{filename}\n🎬 {codec} | {width}x{height}"
+            duration_str = self._format_duration(duration_ms)
+
+            caption = f"{filename}\n🎬 Quality: {height}p | {width}x{height}\n⏰ Duration: {duration_str}"
+
             if audio_tracks:
-                caption += f"\n🔊 " + " | ".join(audio_tracks)
+                caption += f"\n🔊 Languages: " + ", ".join(audio_tracks)
+
             if subtitle_tracks:
-                caption += f"\n💬 " + " | ".join(subtitle_tracks)
-            caption += f"\n📦 {size_str}"
+                caption += f"\n💬 Subtitles: " + ", ".join(subtitle_tracks)
+            else:
+                caption += f"\n💬 Subtitles: None"
+
             return caption
         except Exception as e:
             LOGGER.error(f"MediaInfo Error: {e}")
@@ -304,6 +424,7 @@ class TelegramUploader:
                     if self._listener.is_cancelled:
                         return
                     base_filename = await self._prepare_file(file_, dirpath)
+                    await self._embed_tracks()
                     cap_mono = await self._generate_caption(base_filename)
                     if self._last_msg_in_group:
                         group_lists = [
