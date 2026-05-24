@@ -4,6 +4,7 @@ from asyncio import sleep
 from logging import getLogger
 from natsort import natsorted
 from os import walk, path as ospath
+import json
 from time import time
 from re import match as re_match, sub as re_sub
 from pyrogram.errors import FloodWait, RPCError, FloodPremiumWait, BadRequest
@@ -28,8 +29,9 @@ from tenacity import (
 from ... import intervals
 from ...core.config_manager import Config
 from ...core.telegram_manager import TgClient
-from ..ext_utils.bot_utils import sync_to_async
+from ..ext_utils.bot_utils import sync_to_async, cmd_exec
 from ..ext_utils.files_utils import is_archive, get_base_name
+from ..ext_utils.status_utils import get_readable_file_size
 from ..telegram_helper.message_utils import delete_message
 from ..ext_utils.media_utils import (
     get_media_info,
@@ -139,13 +141,12 @@ class TelegramUploader:
 
     async def _prepare_file(self, file_, dirpath):
         if self._lprefix:
-            cap_mono = f"{self._lprefix} <code>{file_}</code>"
             self._lprefix = re_sub("<.*?>", "", self._lprefix)
             new_path = ospath.join(dirpath, f"{self._lprefix} {file_}")
             await rename(self._up_path, new_path)
             self._up_path = new_path
-        else:
-            cap_mono = f"<code>{file_}</code>"
+
+        base_filename = file_
         if len(file_) > 60:
             if is_archive(file_):
                 name = get_base_name(file_)
@@ -165,7 +166,54 @@ class TelegramUploader:
             new_path = ospath.join(dirpath, f"{name}{ext}")
             await rename(self._up_path, new_path)
             self._up_path = new_path
-        return cap_mono
+            base_filename = f"{name}{ext}"
+
+        return base_filename
+
+    async def _generate_caption(self, filename):
+        size_str = get_readable_file_size(await aiopath.getsize(self._up_path))
+        cmd = ["mediainfo", "--Output=JSON", self._up_path]
+        try:
+            res = await cmd_exec(cmd)
+            data = json.loads(res[0])
+            tracks = data.get("media", {}).get("track", [])
+
+            is_video = False
+            codec = ""
+            width = ""
+            height = ""
+            audio_tracks = []
+            subtitle_tracks = []
+
+            for track in tracks:
+                track_type = track.get("@type")
+                if track_type == "Video":
+                    is_video = True
+                    codec = track.get("Format", "")
+                    width = track.get("Width", "")
+                    height = track.get("Height", "")
+                elif track_type == "Audio":
+                    lang = track.get("Language", "Unknown")
+                    audio_codec = track.get("Format", "")
+                    audio_tracks.append(f"{lang} ({audio_codec})")
+                elif track_type == "Text":
+                    lang = track.get("Language", "Unknown")
+                    sub_codec = track.get("Format", "")
+                    subtitle_tracks.append(f"{lang} ({sub_codec})")
+
+            if not is_video:
+                return f"{filename}\n📦 {size_str}"
+
+            caption = f"{filename}\n🎬 {codec} | {width}x{height}"
+            if audio_tracks:
+                caption += f"\n🔊 " + " | ".join(audio_tracks)
+            if subtitle_tracks:
+                caption += f"\n💬 " + " | ".join(subtitle_tracks)
+            caption += f"\n📦 {size_str}"
+            return caption
+        except Exception as e:
+            LOGGER.error(f"MediaInfo Error: {e}")
+            return f"{filename}\n📦 {size_str}"
 
     def _get_input_media(self, subkey, key):
         rlist = []
@@ -255,7 +303,8 @@ class TelegramUploader:
                         continue
                     if self._listener.is_cancelled:
                         return
-                    cap_mono = await self._prepare_file(file_, dirpath)
+                    base_filename = await self._prepare_file(file_, dirpath)
+                    cap_mono = await self._generate_caption(base_filename)
                     if self._last_msg_in_group:
                         group_lists = [
                             x for v in self._media_dict.values() for x in v.keys()
