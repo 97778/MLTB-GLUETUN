@@ -149,10 +149,10 @@ class BuzzHeavierUploader:
             f"Uploaded To BuzzHeavier: {self._listener.name} - {total_files - corrupted} files"
         )
         await self._listener.on_upload_complete(
-            None,
+            first_link,
             files_dict,
             total_files,
-            corrupted,
+            BuzzHeavier,
         )
 
     async def cancel_task(self):
