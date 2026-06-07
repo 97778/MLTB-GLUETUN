@@ -170,6 +170,24 @@ class TelegramUploader:
 
         return base_filename
 
+
+    def _clean_title(self, filename):
+        base = filename.rsplit('.', 1)[0]
+
+        series_match = re.search(r'(?i)(.*?(?:s\d+[\s\-]*e[p]?\d+|season\s*\d+\s*episode\s*\d+))', base)
+        if series_match:
+            return f"{series_match.group(1).strip()} - TG: @R_Bots_Updates"
+
+        year_match = re.search(r'(?i)(.*?(?:19\d{2}|20\d{2}))', base)
+        if year_match:
+            return f"{year_match.group(1).strip()} - TG: @R_Bots_Updates"
+
+        quality_match = re.search(r'(?i)(.*?(?:480p|720p|1080p|1440p|2160p|4k))', base)
+        if quality_match:
+            return f"{quality_match.group(1).strip()} - TG: @R_Bots_Updates"
+
+        return f"{base.strip()} - TG: @R_Bots_Updates"
+
     async def _embed_tracks(self):
         if not self._up_path.lower().endswith((".mkv", ".mp4")):
             return
@@ -188,7 +206,14 @@ class TelegramUploader:
             lang_map = {
                 "ta": "Tamil", "hi": "Hindi", "en": "English",
                 "ja": "Japanese", "ml": "Malayalam", "te": "Telugu",
-                "ko": "Korean", "zh": "Chinese", "ar": "Arabic"
+                "ko": "Korean", "zh": "Chinese", "ar": "Arabic",
+                "kn": "Kannada", "bn": "Bengali", "mr": "Marathi",
+                "gu": "Gujarati", "pa": "Punjabi", "ur": "Urdu",
+                "or": "Odia", "as": "Assamese", "sa": "Sanskrit",
+                "es": "Spanish", "fr": "French", "de": "German",
+                "it": "Italian", "pt": "Portuguese", "ru": "Russian",
+                "tr": "Turkish", "id": "Indonesian", "th": "Thai",
+                "vi": "Vietnamese", "ms": "Malay", "fil": "Filipino"
             }
 
             codec_map = {
@@ -199,6 +224,11 @@ class TelegramUploader:
                 "MPEG Audio": "MP3",
                 "DTS": "DTS",
             }
+
+            base_filename = os.path.basename(self._up_path)
+            parsed_title = self._clean_title(base_filename)
+            metadata_args.extend(["-metadata", f"title={parsed_title}"])
+            has_tracks_to_modify = True
 
             for track in tracks:
                 track_type = track.get("@type")
@@ -250,7 +280,7 @@ class TelegramUploader:
 
     def _format_duration(self, ms):
         try:
-            seconds = float(ms) / 1000
+            seconds = float(ms)
             h = int(seconds // 3600)
             m = int((seconds % 3600) // 60)
             s = int(seconds % 60)
@@ -276,7 +306,14 @@ class TelegramUploader:
             lang_map = {
                 "ta": "Tamil", "hi": "Hindi", "en": "English",
                 "ja": "Japanese", "ml": "Malayalam", "te": "Telugu",
-                "ko": "Korean", "zh": "Chinese", "ar": "Arabic"
+                "ko": "Korean", "zh": "Chinese", "ar": "Arabic",
+                "kn": "Kannada", "bn": "Bengali", "mr": "Marathi",
+                "gu": "Gujarati", "pa": "Punjabi", "ur": "Urdu",
+                "or": "Odia", "as": "Assamese", "sa": "Sanskrit",
+                "es": "Spanish", "fr": "French", "de": "German",
+                "it": "Italian", "pt": "Portuguese", "ru": "Russian",
+                "tr": "Turkish", "id": "Indonesian", "th": "Thai",
+                "vi": "Vietnamese", "ms": "Malay", "fil": "Filipino"
             }
 
             codec_map = {
