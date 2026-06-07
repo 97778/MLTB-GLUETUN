@@ -6,7 +6,7 @@ from natsort import natsorted
 from os import walk, path as ospath
 import json
 from time import time
-from re import match as re_match, sub as re_sub
+from re import match as re_match, sub as re_sub, search as re_search
 from pyrogram.errors import FloodWait, RPCError, FloodPremiumWait, BadRequest
 from pyrogram.types import (
     InputMediaVideo,
@@ -140,6 +140,16 @@ class TelegramUploader:
         return True
 
     async def _prepare_file(self, file_, dirpath):
+        domain_pattern = r'(?i)(?:www\.[a-z0-9-]+\.[a-z]{2,}|[a-z0-9-]+\.(?:cards|fun|biz|com|net|org|site|vip|in|co|tv|xyz|me|cc))'
+        cleaned_file = re_sub(domain_pattern, '', file_)
+        cleaned_file = re_sub(r'(?i)^[@\s-]+[a-z0-9]+\s*-\s*', '', cleaned_file)
+        cleaned_file = re_sub(r'^[-\s@_]+', '', cleaned_file)
+        if cleaned_file != file_:
+            new_path = ospath.join(dirpath, cleaned_file)
+            await rename(self._up_path, new_path)
+            self._up_path = new_path
+            file_ = cleaned_file
+
         if self._lprefix:
             self._lprefix = re_sub("<.*?>", "", self._lprefix)
             new_path = ospath.join(dirpath, f"{self._lprefix} {file_}")
@@ -174,15 +184,23 @@ class TelegramUploader:
     def _clean_title(self, filename):
         base = filename.rsplit('.', 1)[0]
 
-        series_match = re.search(r'(?i)(.*?(?:s\d+[\s\-]*e[p]?\d+|season\s*\d+\s*episode\s*\d+))', base)
+        domain_pattern = r'(?i)(?:www\.[a-z0-9-]+\.[a-z]{2,}|[a-z0-9-]+\.(?:cards|fun|biz|com|net|org|site|vip|in|co|tv|xyz|me|cc))'
+        base = re_sub(domain_pattern, '', base)
+
+        base = re_sub(r'(?i)^[@\s-]+[a-z0-9]+\s*-\s*', '', base)
+
+        base = re_sub(r'^[-\s@_]+', '', base)
+        base = re_sub(r'[-\s_]+$', '', base)
+
+        series_match = re_search(r'(?i)(.*?(?:s\d+[\s\-]*e[p]?\d+|season\s*\d+\s*episode\s*\d+))', base)
         if series_match:
             return f"{series_match.group(1).strip()} - TG: @R_Bots_Updates"
 
-        year_match = re.search(r'(?i)(.*?(?:19\d{2}|20\d{2}))', base)
+        year_match = re_search(r'(?i)(.*?(?:19\d{2}|20\d{2})\)?)', base)
         if year_match:
             return f"{year_match.group(1).strip()} - TG: @R_Bots_Updates"
 
-        quality_match = re.search(r'(?i)(.*?(?:480p|720p|1080p|1440p|2160p|4k))', base)
+        quality_match = re_search(r'(?i)(.*?(?:480p|544p|720p|1080p|1440p|2160p|4k))', base)
         if quality_match:
             return f"{quality_match.group(1).strip()} - TG: @R_Bots_Updates"
 
@@ -225,7 +243,7 @@ class TelegramUploader:
                 "DTS": "DTS",
             }
 
-            base_filename = os.path.basename(self._up_path)
+            base_filename = ospath.basename(self._up_path)
             parsed_title = self._clean_title(base_filename)
             metadata_args.extend(["-metadata", f"title={parsed_title}"])
             has_tracks_to_modify = True
@@ -289,6 +307,12 @@ class TelegramUploader:
             return "00:00:00"
 
     async def _generate_caption(self, filename):
+        domain_pattern = r'(?i)(?:www\.[a-z0-9-]+\.[a-z]{2,}|[a-z0-9-]+\.(?:cards|fun|biz|com|net|org|site|vip|in|co|tv|xyz|me|cc))'
+        filename = re_sub(domain_pattern, '', filename)
+        filename = re_sub(r'(?i)^[@\s-]+[a-z0-9]+\s*-\s*', '', filename)
+        filename = re_sub(r'^[-\s@_]+', '', filename)
+        filename = re_sub(r'[-\s_]+$', '', filename)
+
         size_str = get_readable_file_size(await aiopath.getsize(self._up_path))
         cmd = ["mediainfo", "--Output=JSON", self._up_path]
         try:
