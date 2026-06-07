@@ -299,6 +299,9 @@ class TelegramUploader:
     def _format_duration(self, ms):
         try:
             seconds = float(ms)
+            # If seconds is suspiciously large (e.g., > 100 hours), it's probably milliseconds from Mediainfo
+            if seconds > 360000:
+                seconds = seconds / 1000
             h = int(seconds // 3600)
             m = int((seconds % 3600) // 60)
             s = int(seconds % 60)
