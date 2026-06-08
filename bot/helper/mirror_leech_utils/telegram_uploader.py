@@ -4,8 +4,9 @@ from asyncio import sleep
 from logging import getLogger
 from natsort import natsorted
 from os import walk, path as ospath
+import json
 from time import time
-from re import match as re_match, sub as re_sub
+from re import match as re_match, sub as re_sub, search as re_search
 from pyrogram.errors import FloodWait, RPCError, FloodPremiumWait, BadRequest
 from pyrogram.types import (
     InputMediaVideo,
@@ -28,8 +29,9 @@ from tenacity import (
 from ... import intervals
 from ...core.config_manager import Config
 from ...core.telegram_manager import TgClient
-from ..ext_utils.bot_utils import sync_to_async
+from ..ext_utils.bot_utils import sync_to_async, cmd_exec
 from ..ext_utils.files_utils import is_archive, get_base_name
+from ..ext_utils.status_utils import get_readable_file_size
 from ..telegram_helper.message_utils import delete_message
 from ..ext_utils.media_utils import (
     get_media_info,
@@ -131,14 +133,23 @@ class TelegramUploader:
         return True
 
     async def _prepare_file(self, file_, dirpath):
+        domain_pattern = r'(?i)(?:www\.[a-z0-9-]+\.[a-z]{2,}|[a-z0-9-]+\.(?:cards|fun|biz|com|net|org|site|vip|in|co|tv|xyz|me|cc))'
+        cleaned_file = re_sub(domain_pattern, '', file_)
+        cleaned_file = re_sub(r'(?i)^[@\s-]+[a-z0-9]+\s*-\s*', '', cleaned_file)
+        cleaned_file = re_sub(r'^[-\s@_]+', '', cleaned_file)
+        if cleaned_file != file_:
+            new_path = ospath.join(dirpath, cleaned_file)
+            await rename(self._up_path, new_path)
+            self._up_path = new_path
+            file_ = cleaned_file
+
         if self._lprefix:
-            cap_mono = f"{self._lprefix} <code>{file_}</code>"
             self._lprefix = re_sub("<.*?>", "", self._lprefix)
             new_path = ospath.join(dirpath, f"{self._lprefix} {file_}")
             await rename(self._up_path, new_path)
             self._up_path = new_path
-        else:
-            cap_mono = f"<code>{file_}</code>"
+
+        base_filename = file_
         if len(file_) > 60:
             if is_archive(file_):
                 name = get_base_name(file_)
@@ -158,7 +169,228 @@ class TelegramUploader:
             new_path = ospath.join(dirpath, f"{name}{ext}")
             await rename(self._up_path, new_path)
             self._up_path = new_path
-        return cap_mono
+            base_filename = f"{name}{ext}"
+
+        return base_filename
+
+
+    def _clean_title(self, filename):
+        base = filename.rsplit('.', 1)[0]
+
+        domain_pattern = r'(?i)(?:www\.[a-z0-9-]+\.[a-z]{2,}|[a-z0-9-]+\.(?:cards|fun|biz|com|net|org|site|vip|in|co|tv|xyz|me|cc))'
+        base = re_sub(domain_pattern, '', base)
+
+        base = re_sub(r'(?i)^[@\s-]+[a-z0-9]+\s*-\s*', '', base)
+
+        base = re_sub(r'^[-\s@_]+', '', base)
+        base = re_sub(r'[-\s_]+$', '', base)
+
+        series_match = re_search(r'(?i)(.*?(?:s\d+[\s\-]*e[p]?\d+|season\s*\d+\s*episode\s*\d+))', base)
+        if series_match:
+            return f"{series_match.group(1).strip()} - TG: @R_Bots_Updates"
+
+        year_match = re_search(r'(?i)(.*?(?:19\d{2}|20\d{2})\)?)', base)
+        if year_match:
+            return f"{year_match.group(1).strip()} - TG: @R_Bots_Updates"
+
+        quality_match = re_search(r'(?i)(.*?(?:480p|544p|720p|1080p|1440p|2160p|4k))', base)
+        if quality_match:
+            return f"{quality_match.group(1).strip()} - TG: @R_Bots_Updates"
+
+        return f"{base.strip()} - TG: @R_Bots_Updates"
+
+    async def _embed_tracks(self):
+        if not self._up_path.lower().endswith((".mkv", ".mp4")):
+            return
+
+        cmd = ["mediainfo", "--Output=JSON", self._up_path]
+        try:
+            res = await cmd_exec(cmd)
+            data = json.loads(res[0])
+            tracks = data.get("media", {}).get("track", [])
+
+            audio_idx = 0
+            sub_idx = 0
+            metadata_args = []
+            has_tracks_to_modify = False
+
+            lang_map = {
+                "ta": "Tamil", "hi": "Hindi", "en": "English",
+                "ja": "Japanese", "ml": "Malayalam", "te": "Telugu",
+                "ko": "Korean", "zh": "Chinese", "ar": "Arabic",
+                "kn": "Kannada", "bn": "Bengali", "mr": "Marathi",
+                "gu": "Gujarati", "pa": "Punjabi", "ur": "Urdu",
+                "or": "Odia", "as": "Assamese", "sa": "Sanskrit",
+                "es": "Spanish", "fr": "French", "de": "German",
+                "it": "Italian", "pt": "Portuguese", "ru": "Russian",
+                "tr": "Turkish", "id": "Indonesian", "th": "Thai",
+                "vi": "Vietnamese", "ms": "Malay", "fil": "Filipino"
+            }
+
+            codec_map = {
+                "Advanced Audio Coding": "AAC",
+                "Dolby Digital Plus": "EAC-3",
+                "Dolby Digital": "AC-3",
+                "Free Lossless Audio Codec": "FLAC",
+                "MPEG Audio": "MP3",
+                "DTS": "DTS",
+            }
+
+            base_filename = ospath.basename(self._up_path)
+            parsed_title = self._clean_title(base_filename)
+            metadata_args.extend(["-metadata", f"title={parsed_title}"])
+            has_tracks_to_modify = True
+
+            for track in tracks:
+                track_type = track.get("@type")
+                if track_type == "Audio":
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else "Unknown"
+                    audio_codec = track.get("Format", "")
+                    audio_codec_full = codec_map.get(audio_codec, audio_codec) if audio_codec else "Unknown"
+
+                    title = f"{lang_full} ({audio_codec_full}) | @R_Bots_Updates - Search on Telegram"
+                    metadata_args.extend(["-metadata:s:a:" + str(audio_idx), f"title={title}"])
+                    audio_idx += 1
+                    has_tracks_to_modify = True
+                elif track_type == "Text":
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else "Unknown"
+
+                    title = f"{lang_full} | @R_Bots_Updates - Search on Telegram"
+                    metadata_args.extend(["-metadata:s:s:" + str(sub_idx), f"title={title}"])
+                    sub_idx += 1
+                    has_tracks_to_modify = True
+
+            if not has_tracks_to_modify:
+                return
+
+            temp_file = f"{self._up_path}.temp{ospath.splitext(self._up_path)[1]}"
+
+            ffmpeg_cmd = [
+                "ffmpeg", "-i", self._up_path,
+                "-map", "0", "-c", "copy"
+            ] + metadata_args + [temp_file, "-y"]
+
+            _, _, returncode = await cmd_exec(ffmpeg_cmd)
+
+            if returncode == 0 and await aiopath.exists(temp_file):
+                # Ensure the original file is replaced successfully
+                await rename(temp_file, self._up_path)
+            else:
+                if await aiopath.exists(temp_file):
+                    await remove(temp_file)
+
+        except Exception as e:
+            LOGGER.error(f"FFmpeg track embed Error: {e}")
+            if await aiopath.exists(f"{self._up_path}.temp{ospath.splitext(self._up_path)[1]}"):
+                try:
+                    await remove(f"{self._up_path}.temp{ospath.splitext(self._up_path)[1]}")
+                except:
+                    pass
+
+    def _format_duration(self, ms):
+        try:
+            seconds = float(ms)
+            # If seconds is suspiciously large (e.g., > 100 hours), it's probably milliseconds from Mediainfo
+            if seconds > 360000:
+                seconds = seconds / 1000
+            h = int(seconds // 3600)
+            m = int((seconds % 3600) // 60)
+            s = int(seconds % 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        except (ValueError, TypeError):
+            return "00:00:00"
+
+    async def _generate_caption(self, filename):
+        domain_pattern = r'(?i)(?:www\.[a-z0-9-]+\.[a-z]{2,}|[a-z0-9-]+\.(?:cards|fun|biz|com|net|org|site|vip|in|co|tv|xyz|me|cc))'
+        filename = re_sub(domain_pattern, '', filename)
+        filename = re_sub(r'(?i)^[@\s-]+[a-z0-9]+\s*-\s*', '', filename)
+        filename = re_sub(r'^[-\s@_]+', '', filename)
+        filename = re_sub(r'[-\s_]+$', '', filename)
+
+        size_str = get_readable_file_size(await aiopath.getsize(self._up_path))
+        cmd = ["mediainfo", "--Output=JSON", self._up_path]
+        try:
+            res = await cmd_exec(cmd)
+            data = json.loads(res[0])
+            tracks = data.get("media", {}).get("track", [])
+
+            is_video = False
+            height = ""
+            width = ""
+            duration_ms = "0"
+            audio_tracks = []
+            subtitle_tracks = []
+
+            lang_map = {
+                "ta": "Tamil", "hi": "Hindi", "en": "English",
+                "ja": "Japanese", "ml": "Malayalam", "te": "Telugu",
+                "ko": "Korean", "zh": "Chinese", "ar": "Arabic",
+                "kn": "Kannada", "bn": "Bengali", "mr": "Marathi",
+                "gu": "Gujarati", "pa": "Punjabi", "ur": "Urdu",
+                "or": "Odia", "as": "Assamese", "sa": "Sanskrit",
+                "es": "Spanish", "fr": "French", "de": "German",
+                "it": "Italian", "pt": "Portuguese", "ru": "Russian",
+                "tr": "Turkish", "id": "Indonesian", "th": "Thai",
+                "vi": "Vietnamese", "ms": "Malay", "fil": "Filipino"
+            }
+
+            codec_map = {
+                "Advanced Audio Coding": "AAC",
+                "Dolby Digital Plus": "EAC-3",
+                "Dolby Digital": "AC-3",
+                "Free Lossless Audio Codec": "FLAC",
+                "MPEG Audio": "MP3",
+                "DTS": "DTS",
+            }
+
+            for track in tracks:
+                track_type = track.get("@type")
+                if track_type == "General" and "Duration" in track:
+                    duration_ms = track.get("Duration", "0")
+                elif track_type == "Video":
+                    is_video = True
+                    width = track.get("Width", "")
+                    height = track.get("Height", "")
+                elif track_type == "Audio":
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else ""
+
+                    audio_codec = track.get("Format", "")
+                    audio_codec_full = codec_map.get(audio_codec, audio_codec)
+
+                    if lang_full:
+                        audio_tracks.append(f"{lang_full} ({audio_codec_full})")
+                    else:
+                        audio_tracks.append(f"Unknown ({audio_codec_full})")
+                elif track_type == "Text":
+                    lang = track.get("Language", "")
+                    lang_full = lang_map.get(lang.lower(), lang) if lang else ""
+                    if lang_full:
+                        subtitle_tracks.append(f"{lang_full}")
+                    else:
+                        subtitle_tracks.append(f"Unknown")
+
+            if not is_video:
+                return f"{filename}\n📦 {size_str}"
+
+            duration_str = self._format_duration(duration_ms)
+
+            caption = f"{filename}\n🎬 Quality: {height}p | {width}x{height}\n⏰ Duration: {duration_str}"
+
+            if audio_tracks:
+                caption += f"\n🔊 Languages: " + ", ".join(audio_tracks)
+
+            if subtitle_tracks:
+                caption += f"\n💬 Subtitles: " + ", ".join(subtitle_tracks)
+            else:
+                caption += f"\n💬 Subtitles: None"
+
+            return caption
+        except Exception as e:
+            LOGGER.error(f"MediaInfo Error: {e}")
+            return f"{filename}\n📦 {size_str}"
 
     def _get_input_media(self, subkey, key):
         rlist = []
@@ -249,7 +481,9 @@ class TelegramUploader:
                         continue
                     if self._listener.is_cancelled:
                         return
-                    cap_mono = await self._prepare_file(file_, dirpath)
+                    base_filename = await self._prepare_file(file_, dirpath)
+                    await self._embed_tracks()
+                    cap_mono = await self._generate_caption(base_filename)
                     if self._last_msg_in_group:
                         group_lists = [
                             x for v in self._media_dict.values() for x in v.keys()
