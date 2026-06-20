@@ -1,6 +1,28 @@
 services:
+  vpn:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=8IVQg1XKDl6BtHHb6wwJKtdmYtk6NLXcx8mXOXnyY10=
+      - WIREGUARD_ADDRESSES=10.2.0.2/32
+      - WIREGUARD_PUBLIC_KEY=zcfEQgUoPLK2kvDicsA/4B9F2AI7qfxX5ueDo/Zcjj4=
+      - WIREGUARD_ENDPOINT_IP=149.36.51.3
+      - WIREGUARD_ENDPOINT_PORT=51820
+      - DNS_ADDRESS=10.2.0.1
+    ports:
+      - "8080:8080"  # adjust to whatever port(s) your app needs
+    restart: unless-stopped
+
   app:
     build: .
     command: bash start.sh
     restart: on-failure
-    network_mode: "host"
+    network_mode: "service:vpn"
+    depends_on:
+      - vpn
